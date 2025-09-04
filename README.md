@@ -24,7 +24,9 @@
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/ai-study-buddy.git
+   git clone https://github.com/knightRehman/ai-study-buddy.git
+   ```
+   ```bash
    cd ai-study-buddy
    ```
 
@@ -36,6 +38,9 @@
 3. Or manually install:
    ```bash
    pip install transformers pyttsx3 spacy PyPDF2 torch
+   ```
+
+   ```bash
    python -m spacy download en_core_web_sm
    ```
 
