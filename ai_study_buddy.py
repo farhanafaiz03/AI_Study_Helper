@@ -12,87 +12,169 @@ import PyPDF2
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 import spacy
 import torch
-import random
+# import random
 import os
+import sys
 
 
 USE_TTS = False
 if USE_TTS:
-    tts_engine = pyttsx3.init()
+    try:
+        tts_engine = pyttsx3.init()
+    except Exception as e:
+        print(f"[Error]Text-to-speech initialization failed: {e}")
+        USE_TTS = False
+
 
 def speak(text):
     """Optional text-to-speech"""
     if USE_TTS:
-        tts_engine.say(text)
-        tts_engine.runAndWait()
+        try:
+            tts_engine.say(text)
+            tts_engine.runAndWait()
+        except Exception as e:
+            print(f"[Error] TTS failed: {e}")
 
-# MODEL
+        
+
+# MODEL loading
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
 model_name = "t5-small"  # Faster than t5-base
-tokenizer = T5Tokenizer.from_pretrained(model_name)
-model = T5ForConditionalGeneration.from_pretrained(model_name).to(device)
+try:
+    tokenizer = T5Tokenizer.from_pretrained(model_name, legacy=False)
+    model = T5ForConditionalGeneration.from_pretrained(model_name).to(device)
+except Exception as e:
+    print(f"[Fatal Error] Could not load T5 model/tokenizer: {e}")
+    sys.exit(1)   # stop program if model is missing
 
+# NLP SpaCy
 
 try:
     nlp = spacy.load("en_core_web_sm")
-except:
+except OSError:
+    print("[Info] Spacy model not found. Downloading...")
     os.system("python -m spacy download en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
+
+    try:
+        nlp = spacy.load("en_core_web_sm")
+    except Exception as e:
+        print(f"[Fatal Error] Could not load Spacy model: {e}")
+        sys.exit(1)
+
 
 # PDF TEXT EXTRACTION
 def extract_text_from_pdf(pdf_path):
-    with open(pdf_path, 'rb') as file:
-        reader = PyPDF2.PdfReader(file)
-        return ''.join([page.extract_text() or '' for page in reader.pages])
+    try:
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError("Pdf path doesn't exist.")
+        
+        with open(pdf_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            return ''.join([page.extract_text() or '' for page in reader.pages])
+    
+    except FileNotFoundError as e:
+        print(f"[Error] {e}")
+        return ""   # return empty text instead of crashing
+    except Exception as e:
+        print(f"[Error] Failed to extract PDF text: {e}")
+        return ""
+
 
 # summarizer
 def summarize_text(text):
-    chunks = [text[i:i+800] for i in range(0, len(text), 800)]
-    summaries = []
-    for chunk in chunks[:2]:  # Limit to 2 chunks max for speed
-        input_text = "summarize: " + chunk
-        inputs = tokenizer.encode(input_text, return_tensors="pt", max_length=512, truncation=True).to(device)
-        summary_ids = model.generate(inputs, max_length=150, min_length=50, length_penalty=2.0, num_beams=4, early_stopping=True)
-        summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-        summaries.append(summary)
-    final_summary = "\n".join(summaries)
-    speak(final_summary)
-    return final_summary
+    if not text.strip():
+        return "[Error] No text available to summarize."
+    
+    try:
+        chunks = [text[i:i+800] for i in range(0, len(text), 800)]
+        summaries = []
+        for chunk in chunks[:2]:  # Limit to 2 chunks max for speed
+            input_text = "summarize: " + chunk
+            inputs = tokenizer.encode(input_text, return_tensors="pt", max_length=512, truncation=True).to(device)
+            summary_ids = model.generate(inputs, max_length=150, min_length=50, length_penalty=2.0, num_beams=4, early_stopping=True)
+            summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            summaries.append(summary)
+        final_summary = "\n".join(summaries)
+        speak(final_summary)
+        return final_summary
+    
+    except Exception as e:
+        return f"[Error] Summarization failed: {e}"
 
 # flash card generator
 def generate_flashcards(text):
-    questions = []
-    answers = []
-    sentences = text.split('.')
-    for sentence in sentences[:100]:  # Limit for faster performance
-        doc = nlp(sentence.strip())
-        for ent in doc.ents:
-            if ent.label_ in ["PERSON", "ORG", "GPE"]:
-                question = f"Who is {ent.text}?"
-                if question not in questions:
-                    questions.append(question)
-                    answers.append(ent.text)
+    if not text.strip():
+        return "[Error] No text available for flashcards."
+    
+    try: 
+        questions, answers = [], []
+        sentences = text.split('.')
+        for sentence in sentences[:100]:  # Limit for faster performance
+            doc = nlp(sentence.strip())
+            for ent in doc.ents:
+                if ent.label_ in ["PERSON", "ORG", "GPE"]:
+                    question = f"Who is {ent.text}?"
+                    if question not in questions:
+                        questions.append(question)
+                        answers.append(ent.text)
 
-    flashcards = list(zip(questions, answers))
-    speak(f"Generated {len(flashcards)} flashcards.")
-    return "\n".join([f"Q: {q}\nA: {a}" for q, a in flashcards])
+        flashcards = list(zip(questions, answers))
+        speak(f"Generated {len(flashcards)} flashcards.")
+        return "\n".join([f"Q: {q}\nA: {a}" for q, a in flashcards])
 
+    except Exception as e:
+        return f"[Error] Flashcard generation failed: {e}"
+
+#  QnA
 
 def answer_question(context, question):
-    context_chunk = context[:1024]
-    input_text = f"question: {question} context: {context_chunk}"
-    inputs = tokenizer.encode(input_text, return_tensors="pt", max_length=512, truncation=True).to(device)
-    answer_ids = model.generate(inputs, max_length=100, num_beams=4, early_stopping=True)
-    answer = tokenizer.decode(answer_ids[0], skip_special_tokens=True)
-    speak(answer)
-    return answer
+    if not context.strip():
+        return "[Error] No context to answer from."
+    
+    try:
+        context_chunk = context[:1024]
+        input_text = f"question: {question} context: {context_chunk}"
+        inputs = tokenizer.encode(input_text, return_tensors="pt", max_length=512, truncation=True).to(device)
+        answer_ids = model.generate(inputs, max_length=100, num_beams=4, early_stopping=True)
+        answer = tokenizer.decode(answer_ids[0], skip_special_tokens=True)
+        speak(answer)
+        return answer
+    
+    except Exception as e:
+        return f"[Error] Answering failed: {e}"
+    
+
+# Main Loop
+
+def get_pdf_path():
+    """Ask the user for a valid PDF path until one is provided, or 'q' to quit."""
+    while True:
+        pdf_path = input("Enter the path to your PDF file: ").strip()
+
+        if pdf_path.lower() == 'q':
+            print("Exiting program. Goodbye!")
+            sys.exit(0)
+
+        if not os.path.exists(pdf_path):
+            print("[Error] Path does not exist. Try again or Press 'q' to quit.")
+            continue
+
+        if not pdf_path.lower().endswith(".pdf"):
+            print("[Error] File is not a PDF. Try again.")
+            continue
+
+        return pdf_path
 
 
 if __name__ == "__main__":
-    pdf_path = input("Enter the path to your PDF file: ").strip()
+    pdf_path = get_pdf_path()
     study_text = extract_text_from_pdf(pdf_path)
+
+    while not study_text:
+        print("[Error] Could not extract any text from this PDF.")
+        pdf_path = get_pdf_path()
+        study_text = extract_text_from_pdf(pdf_path)
 
     while True:
         print("\nOptions:\n1. Summarize\n2. Ask a question\n3. Generate flashcards\n4. Exit")
@@ -112,9 +194,8 @@ if __name__ == "__main__":
             print("\nFlashcards:\n", flashcards)
 
         elif choice == '4':
-            print("Goodbye!")
+            print("See you next time.")
             break
 
         else:
-            print("Invalid choice.")
-
+            print("Invalid choice. Pls Pick 1-4.")
